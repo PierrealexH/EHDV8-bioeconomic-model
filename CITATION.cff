@@ -1,0 +1,18 @@
+
+cff-version: 1.2.0
+message: "If you use this software, please cite it using the metadata in this file."
+type: software
+title: "EHDV-8 bioeconomic model for French beef cow–calf farms"
+authors:
+  - family-names: "Heckly"
+    given-names: "Pierre-Alexandre"
+version: 1.0.0
+date-released: 2026-11-11
+repository-code: "https://github.com/PierrealexH/EHDV8-bioeconomic-model"
+license: MIT
+keywords:
+  - Epizootic haemorrhagic disease
+  - EHDV-8
+  - Bioeconomic modelling
+  - Beef cattle
+  - Monte Carlo simulation
