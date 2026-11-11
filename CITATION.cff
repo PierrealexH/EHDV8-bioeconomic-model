@@ -1,5 +1,6 @@
 
 cff-version: 1.2.0
+doi: 10.5281/zenodo.24144287
 message: "If you use this software, please cite it using the metadata in this file."
 type: software
 title: "EHDV-8 bioeconomic model for French beef cow–calf farms"
