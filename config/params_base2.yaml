@@ -1,0 +1,21 @@
+---
+CULL: 0.20
+MO_COW: 0.02
+IVV: 385
+MO_WEAN: 0.096
+PR_MA: 0.50
+PRICE_CULL: 1885
+PRICE_WEANM: 1400
+PRICE_WEANF: 1200
+ugb_by_cow: 1.7          # ex. 1.7 UGB par vache
+cout_alim_ugb: 250
+cout_elevage_ugb: 140
+COST_VET_D: 0
+PRICEREDUCTION: 0.0
+COSTDAY: 0.0
+D_BLOCKMEAN: 0
+PROPPCR: 0.0
+PRICEPCR: 0.0
+
+
+

@@ -1,0 +1,1465 @@
+---
+title: "results of bioeconomic model"
+author: "P-A Heckly"
+
+params:
+  restr: true
+
+format:
+  html:
+    embed-resources: true   # embarque CSS/JS/images en base64
+    fig-format: png
+    fig-dpi: 200
+    fig-width: 8
+    fig-height: 5
+    toc: true
+    toc-depth: 2
+    code-fold: true
+    code-tools: true
+    theme: cosmo
+execute:
+    message: false
+    warning: true
+knitr:
+  opts_chunk:
+    fig.path: "sorties/figures/"
+    dev: png
+    dpi: 200
+---
+
+**ACTIVE the MODULE "RESTRICTIONS" , above=\> rest = true**
+
+## 1. sources charging
+
+```{r}
+#| include: false
+library(here)
+
+restr_on <- FALSE
+if (exists("params") && is.list(params) && !is.null(params[["restr"]])) {
+  restr_on <- isTRUE(params[["restr"]])
+}
+
+source(here("R", "06.modele_funs.R"), local = TRUE)
+source(here("R", "08.scenarios2.R"),   local = TRUE)
+# Liste économique : params_eco (params = paramètres Quarto, binding verrouillé)
+
+fig_dir <- here("sorties", "figures")
+dir.create(fig_dir, recursive = TRUE, showWarnings = FALSE)
+# Chemin relatif : Quarto embarque les PNG dans le HTML et les écrit aussi sur disque.
+knitr::opts_chunk$set(
+  fig.path = "sorties/figures/",
+  dev = "png",
+  dpi = 200
+)
+
+# Sankey (htmlwidget) : PNG disque si webshot2 est disponible
+save_widget_png <- function(widget, filename, width = 900, height = 500) {
+  png_path <- file.path(fig_dir, paste0(filename, ".png"))
+  if (!requireNamespace("htmlwidgets", quietly = TRUE)) {
+    warning("htmlwidgets manquant : PNG Sankey non écrit.")
+    return(invisible(png_path))
+  }
+  tmp_html <- tempfile(fileext = ".html")
+  on.exit(unlink(tmp_html), add = TRUE)
+  htmlwidgets::saveWidget(widget, tmp_html, selfcontained = TRUE)
+  if (requireNamespace("webshot2", quietly = TRUE)) {
+    tryCatch(
+      webshot2::webshot(tmp_html, png_path, vwidth = width, vheight = height, zoom = 2),
+      error = function(e) warning("Sankey HTML seulement (webshot2 : ", e$message, ")")
+    )
+  } else {
+    warning("Installe webshot2 pour exporter les Sankey en PNG dans sorties/figures/.")
+  }
+  invisible(png_path)
+}
+
+```
+
+```{r}
+#| echo: false
+cat("Paramètres de base chargés :", basename_yaml(params_eco), "\n")
+cat("Impacts MHE chargés :", basename_yaml(impacts_mhe), "\n")
+cat("Variante COST_RESTR :", if (isTRUE(restr_on)) "activée" else "core (off)", "\n")
+
+```
+
+```{r}
+library(tibble)
+library(knitr)
+
+impacts_tbl <- tibble::tibble(
+  Paramètre = c("dMO_COW", "dMO_WEAN", "dIVV", "dCULL"),
+  Valeur = unlist(impacts_mhe, use.names = FALSE),
+  Description = c(
+    "Surmortalité adultes femelles (points)",
+    "Surmortalité veaux (points)",
+    "Allongement IVV (jours)",
+    "Augmentation culling rate (points)"
+  )
+)
+
+knitr::kable(impacts_tbl,
+             caption = "Impacts MHE (valeurs additives aux paramètres de référence)",
+             col.names = c("Nom", "Valeur", "Description"))
+
+```
+
+## Sankey diagrams
+
+```{r}
+# Taux de remplacement de référence
+TR_eff_ref <- params_eco$CULL + params_eco$MO_COW
+
+# Scénario de référence
+res_ref <- run_scenario(params_eco, TR_eff_ref, mhe = FALSE)
+
+```
+
+### a. Weanlings
+
+```{r}
+#| label: fig-sankey-calves
+#| echo: false
+#| fig-width: 8
+#| fig-height: 4
+library(networkD3)
+
+sankey_calves_ref_pct <- function(res){
+  ivv_days <- res$breakdown$IVV
+  mo_y     <- res$breakdown$MO_WEAN
+  tr_eff   <- res$breakdown$TR_eff_ref
+  B <- 365 / ivv_days
+  died_share     <- mo_y
+  survived_share <- 1 - mo_y
+  renew_share    <- tr_eff / B
+  sold_share     <- max(survived_share - renew_share, 0)
+
+  pct  <- function(x) sprintf("%.1f%%", 100 * x)
+  valp <- function(x) round(100 * x, 1)
+  nodes <- data.frame(name = c(
+    "Calves born (100%)",
+    paste0("Died pre-weaning (", pct(died_share), ")"),
+    paste0("Survived (",       pct(survived_share), ")"),
+    paste0("Renewal (",        pct(renew_share), ")"),
+    paste0("Sold (",           pct(sold_share), ")")
+  ))
+  links <- data.frame(
+    source = c(0, 0, 2, 2),
+    target = c(1, 2, 3, 4),
+    value  = c(valp(died_share), valp(survived_share), valp(renew_share), valp(sold_share))
+  )
+  sankeyNetwork(
+    Links = links, Nodes = nodes,
+    Source = "source", Target = "target", Value = "value", NodeID = "name",
+    fontSize = 12, nodeWidth = 24, sinksRight = TRUE
+  )
+}
+
+p_sankey_calves <- sankey_calves_ref_pct(res_ref)
+save_widget_png(p_sankey_calves, "fig-sankey-calves")
+p_sankey_calves
+```
+
+### b. Cows
+
+```{r}
+#| label: fig-sankey-cows
+#| echo: false
+#| fig-width: 8
+#| fig-height: 4
+library(networkD3)
+
+sankey_ref_pct <- function(res){
+  mo  <- res$breakdown$MO_COW
+  cu  <- res$breakdown$CULL_used
+  tr  <- res$breakdown$TR_eff_ref
+
+  if (is.null(mo) || is.null(cu) || is.null(tr))
+    stop("Certains éléments nécessaires (MO_COW, CULL_used, TR_eff_ref) manquent dans res$breakdown")
+
+  rest <- 1 - tr
+  repl <- tr
+  pct  <- function(x) sprintf("%.1f%%", 100 * x)
+  valp <- function(x) round(100 * x, 1)
+
+  nodes <- data.frame(
+    name = c(
+      "COWS_t",
+      paste0("Mortality (", pct(mo), ")"),
+      paste0("Culling (",   pct(cu), ")"),
+      paste0("Remain (",    pct(rest), ")"),
+      paste0("Replacements (", pct(repl), ")"),
+      "COWS_t+1"
+    ),
+    stringsAsFactors = FALSE
+  )
+
+  links <- data.frame(
+    source = c(0, 0, 0, 4, 3),
+    target = c(1, 2, 3, 5, 5),
+    value  = c(valp(mo), valp(cu), valp(rest), valp(repl), valp(rest))
+  )
+
+  sankeyNetwork(
+    Links = links, Nodes = nodes,
+    Source = "source", Target = "target", Value = "value", NodeID = "name",
+    fontSize = 12, nodeWidth = 24, sinksRight = TRUE
+  )
+}
+
+p_sankey_cows <- sankey_ref_pct(res_ref)
+save_widget_png(p_sankey_cows, "fig-sankey-cows")
+p_sankey_cows
+```
+
+## 3. Stochastic simulation
+
+### a. parameters
+
+```{r}
+#| warning: false
+#| message: false
+
+library(dplyr)
+library(readr)
+library(knitr)
+library(here)
+
+#désactiver affichage scientifique des valeurs
+options(scipen = 999)
+
+
+# 1) Charger le CSV des distributions
+dist_tbl <- read.csv(here::here("config/stochastic_2023_2.csv"), stringsAsFactors = FALSE)
+
+# 2) Harmoniser les noms de colonnes (si ton CSV utilise d'autres noms)
+#    -> on essaye de retrouver automatiquement les colonnes usuelles
+nm <- names(dist_tbl)
+
+col_param <- intersect(nm, c("param", "Parameter", "name", "Name"))[1]
+col_dist  <- intersect(nm, c("dist", "Dist", "distribution", "Distribution"))[1]
+col_mean  <- intersect(nm, c("mean", "Mean", "mu"))[1]
+col_sd    <- intersect(nm, c("sd", "SD", "sigma"))[1]
+col_min   <- intersect(nm, c("min", "Min", "lower", "Lower"))[1]
+col_max   <- intersect(nm, c("max", "Max", "upper", "Upper"))[1]
+
+# Sécurité : si certaines colonnes n'existent pas, on les crée à NA
+if (is.na(col_param)) stop("Colonne 'param' introuvable dans dist_tbl.")
+if (is.na(col_dist))  stop("Colonne 'dist' (distribution) introuvable dans dist_tbl.")
+
+dist_clean <- dist_tbl %>%
+  transmute(
+    Parameter    = .data[[col_param]],
+    Distribution = .data[[col_dist]],
+    Mean         = if (!is.na(col_mean)) .data[[col_mean]] else NA_real_,
+    SD           = if (!is.na(col_sd))   .data[[col_sd]]   else NA_real_,
+    Min          = if (!is.na(col_min))  .data[[col_min]]  else NA_real_,
+    Max          = if (!is.na(col_max))  .data[[col_max]]  else NA_real_
+  )
+
+# 3) Dictionnaire (params_stoch2) : descriptions lisibles
+params_stoch2 <- tibble::tibble(
+  Parameter = c(
+    "MO_COW", "MO_WEAN", "CULL", "IVV",
+    "PRICE_CULL", "PRICE_WEANM", "PRICE_WEANF"
+  ),
+  Description = c(
+    "Adult female mortality rate",
+    "Calf mortality rate",
+    "Culling rate",
+    "Calving interval (days)",
+    "Cull cow sale price (€)",
+    "Weanling male sale price (€)",
+    "Weanling heifer sale price (€)"
+  )
+)
+
+# 4) Joindre les descriptions
+stoch_tbl <- dist_clean %>%
+  left_join(params_stoch2, by = "Parameter") %>%
+  relocate(Description, .after = Parameter) %>%
+  arrange(Parameter)
+
+# 5) Afficher dans le Quarto
+knitr::kable(
+  stoch_tbl,
+  digits = 2,
+  caption = "Baseline stochastic input parameters and probability distributions used in the Monte Carlo simulations",
+  col.names = c("Parameter", "Description", "Distribution", "Mean", "SD", "Min", "Max")
+)
+
+```
+
+### b. Gross Margins (EHD-free, HED, delta)
+
+\
+Distribution des marges brutes et écart entre scénario (référence, mhe) suivant des jeux de données tirés aléatoirement, dans des distributions normales bornées, de valeurs des paramètres d'élevage (taux d'abattage, mortalité vache et veau, IVV) et des prix de vente (vache et broutard mâles et femelles).
+
+```{r}
+#| label: stochastic
+#| echo: false
+#| message: false
+#| warning: false
+library(knitr)
+library(ggplot2)
+
+# --- 1) Charger les paramètres de distributions ---
+dist_tbl <- read.csv(here::here("config/stochastic_2023_2.csv"), stringsAsFactors = FALSE)
+
+# --- 2) Sampler-----
+rnorm_clamp <- function(mean, sd, minv = -Inf, maxv = Inf) {
+  x <- rnorm(1, mean, sd)
+  x <- max(min(x, maxv), minv)
+  x
+}
+
+# bornes par défaut
+param_bounds <- function(name) {
+  switch(name,
+    "CULL"    = c(0, 1),
+    "MO_COW" = c(0, 1),
+    "MO_WEAN"  = c(0, 1),
+    "IVV"      = c(250, 520),     #  pour éviter valeurs absurdes
+    # prix et coûts : bornes larges
+    "PRICE_CULL"= c(0, Inf),
+    "PRICE_WEANM"= c(0, Inf),
+   "PRICE_WEANF"= c(0, Inf),
+    c(-Inf, Inf)
+  )
+}
+
+draw_params_once <- function(base_params, dist_tbl) {
+  p <- base_params
+  for (i in seq_len(nrow(dist_tbl))) {
+    nm   <- dist_tbl$param[i]
+    dist <- dist_tbl$dist[i]
+    mu   <- dist_tbl$mean[i]
+    sd   <- dist_tbl$sd[i]
+    rng  <- param_bounds(nm)
+
+    val <- switch(dist,
+      "normal" = rnorm_clamp(mu, sd, rng[1], rng[2]),
+      stop(sprintf("Distribution '%s' non gérée pour %s", dist, nm))
+    )
+
+    p[[nm]] <- val
+  }
+  p
+}
+
+# --- 3) Monte Carlo autour de la référence ---
+run_mc <- function(B = 1000, seed = 123) {
+  set.seed(seed)
+  out <- vector("list", B)
+
+  for (b in seq_len(B)) {
+    # 3.1 Tirer un jeu de paramètres
+    p_ref <- draw_params_once(params_eco, dist_tbl)
+
+    # 3.2 calcul du TR_eff_ref = CULL + MO_COW du TIRAGE*
+    TR_eff_ref_row <- p_ref$CULL + p_ref$MO_COW
+
+    # 3.3 Scénario REF
+    res_ref <- run_scenario(p_ref, TR_eff_ref_row, mhe = FALSE)
+
+    # 3.4 Scénario MHE (impacts constants ; TR_eff_ref_row inchangé)*
+    p_mhe <- apply_impacts(p_ref, impacts_mhe)
+    p_mhe$COST_VET_D <- 15
+    p_mhe <- apply_mhe_restr(p_mhe, restr = restr_on)
+    res_mhe <- run_scenario(p_mhe, TR_eff_ref_row, mhe = TRUE)
+
+    out[[b]] <- data.frame(
+      draw = b,
+      MB_ref = res_ref$MB_op,
+      MB_mhe = res_mhe$MB_op,
+      dMB    = res_mhe$MB_op - res_ref$MB_op
+    )
+  }
+
+  do.call(rbind, out)
+}
+
+# --- 4) Lancer, résumer, visualiser ---
+mc_res <- run_mc(B = 2000, seed = 42)
+
+# Résumé statistique
+summ <- within(data.frame(
+  mean_MB_ref = mean(mc_res$MB_ref),
+  sd_MB_ref   = sd(mc_res$MB_ref),
+  mean_MB_mhe = mean(mc_res$MB_mhe),
+  sd_MB_mhe   = sd(mc_res$MB_mhe),
+  mean_dMB    = mean(mc_res$dMB),
+  sd_dMB      = sd(mc_res$dMB),
+  q025_dMB     = quantile(mc_res$dMB, 0.025),
+  q50_dMB     = quantile(mc_res$dMB, 0.50),
+  q975_dMB     = quantile(mc_res$dMB, 0.975),
+  p_dMB_neg   = mean(mc_res$dMB < 0)
+), {})
+
+
+kable(summ)
+
+
+#| label: sim_interval_normal
+#| echo: false
+#| message: false
+#| warning: false
+
+library(dplyr)
+library(knitr)
+
+
+
+```
+
+### c. Decomposition
+
+```{r}
+#| label: stochastic_decompos
+#| warning: false
+
+
+# --- 1) Charger les paramètres de distributions ---
+dist_tbl <- read.csv(here::here("config/stochastic_2023_2.csv"), stringsAsFactors = FALSE)
+
+# --- 2) Sampler-----
+rnorm_clamp <- function(mean, sd, minv = -Inf, maxv = Inf) {
+  x <- rnorm(1, mean, sd)
+  x <- max(min(x, maxv), minv)
+  x
+}
+
+# bornes par défaut
+param_bounds <- function(name) {
+  switch(name,
+    "CULL"    = c(0, 1),
+    "MO_COW" = c(0, 1),
+    "MO_WEAN"  = c(0, 1),
+    "IVV"      = c(250, 520),     #  pour éviter valeurs absurdes
+    # prix et coûts : bornes larges
+    "PRICE_CULL"= c(0, Inf),
+    "PRICE_WEANM"= c(0, Inf),
+   "PRICE_WEANF"= c(0, Inf),
+    c(-Inf, Inf)
+  )
+}
+
+draw_params_once <- function(base_params, dist_tbl) {
+  p <- base_params
+  for (i in seq_len(nrow(dist_tbl))) {
+    nm   <- dist_tbl$param[i]
+    dist <- dist_tbl$dist[i]
+    mu   <- dist_tbl$mean[i]
+    sd   <- dist_tbl$sd[i]
+    rng  <- param_bounds(nm)
+
+    val <- switch(dist,
+      "normal" = rnorm_clamp(mu, sd, rng[1], rng[2]),
+      stop(sprintf("Distribution '%s' non gérée pour %s", dist, nm))
+    )
+
+    p[[nm]] <- val
+  }
+  p
+}
+
+
+# --- Helper : récupérer REV_WEAN total même si m/f sont séparés ---
+get_REV_WEAN <- function(bd) {
+  if (!is.null(bd$REV_WEAN)) {
+    bd$REV_WEAN
+  } else if (!is.null(bd$REV_WEAN_m) && !is.null(bd$REV_WEAN_f)) {
+    bd$REV_WEAN_m + bd$REV_WEAN_f
+  } else {
+    NA_real_
+  }
+}
+
+# --- Monte Carlo avec décomposition complète (REF & MHE) ---
+run_mc_decomp <- function(B = 2000, seed = 42) {
+  set.seed(seed)
+  out <- vector("list", B)
+
+  for (b in seq_len(B)) {
+    # 1) Tirage de paramètres autour de la référence
+    p_ref <- draw_params_once(params_eco, dist_tbl)
+
+    # 2) TR_eff_ref du tirage (règle v03)
+    TR_eff_ref_row <- p_ref$CULL + p_ref$MO_COW
+
+    # 3) Scénario REF
+    res_ref <- run_scenario(p_ref, TR_eff_ref_row, mhe = FALSE)
+
+    # 4) Scénario MHE : impacts constants (tes 'impacts_mhe') + surcoûts
+    p_mhe <- apply_impacts(p_ref, impacts_mhe)
+    p_mhe$COST_VET_D <- 15
+    p_mhe <- apply_mhe_restr(p_mhe, restr = restr_on)
+    res_mhe <- run_scenario(p_mhe, TR_eff_ref_row, mhe = TRUE)
+
+    # 5) Empiler la décomposition pour REF et MHE
+    out[[b]] <- rbind(
+      data.frame(
+        draw = b, scen = "REF",
+        REV_COW     = res_ref$breakdown$REV_COW,
+        REV_WEAN      = get_REV_WEAN(res_ref$breakdown),
+        COST_PROD  = res_ref$breakdown$COST_PROD,
+        COST_VET_D = res_ref$breakdown$COST_VET_D,
+        COST_PRIX  = res_ref$breakdown$COST_PRIX,
+        COST_BLOC  = res_ref$breakdown$COST_BLOC,
+        COST_PCR   = res_ref$breakdown$COST_PCR,
+        COST_RESTR = res_ref$breakdown$COST_RESTR,
+        n_WEAN_sold = res_ref$breakdown$n_WEAN_sold,
+        MB_op      = res_ref$MB_op,
+        check.names = FALSE
+      ),
+      data.frame(
+        draw = b, scen = "MHE",
+        REV_COW     = res_mhe$breakdown$REV_COW,
+        REV_WEAN      = get_REV_WEAN(res_mhe$breakdown),
+        COST_PROD  = res_mhe$breakdown$COST_PROD,
+        COST_VET_D = res_mhe$breakdown$COST_VET_D,
+        COST_PRIX  = res_mhe$breakdown$COST_PRIX,
+        COST_BLOC  = res_mhe$breakdown$COST_BLOC,
+        COST_PCR   = res_mhe$breakdown$COST_PCR,
+        COST_RESTR = res_mhe$breakdown$COST_RESTR,
+        n_WEAN_sold = res_mhe$breakdown$n_WEAN_sold,
+        MB_op      = res_mhe$MB_op,
+        check.names = FALSE
+      )
+    )
+  }
+
+  dplyr::bind_rows(out)
+}
+
+# --- Lancer et calculer les MOYENNES par scénario ---
+mc_decomp <- run_mc_decomp(B = 2000, seed = 42)
+
+moyennes_stoch <- mc_decomp %>%
+  dplyr::group_by(scen) %>%
+  dplyr::summarise(
+    REV_COW     = mean(REV_COW,     na.rm = TRUE),
+    REV_WEAN      = mean(REV_WEAN,      na.rm = TRUE),
+    COST_PROD  = mean(COST_PROD,  na.rm = TRUE),
+    COST_VET_D = mean(COST_VET_D, na.rm = TRUE),
+    COST_PRIX  = mean(COST_PRIX,  na.rm = TRUE),
+    COST_BLOC  = mean(COST_BLOC,  na.rm = TRUE),
+    COST_PCR   = mean(COST_PCR,   na.rm = TRUE),
+    COST_RESTR = mean(COST_RESTR, na.rm = TRUE),
+    MB_op      = mean(MB_op,      na.rm = TRUE),
+    .groups = "drop"
+  )
+
+moyennes_stoch
+
+
+```
+
+## 4. Sensitivity analysis of restriction costs
+
+```{r}
+#| label: tbl-restr-sa
+#| echo: false
+source(here::here("R", "sens_restr.R"), local = TRUE)
+if (!isTRUE(restr_on)) {
+  cat("Sensibilité COST_RESTR : actif seulement avec restr:true.\n")
+} else {
+  tbl_restr_sa <- summarise_restr_sa(
+    mc_decomp,
+    costday = restr_params_central$COSTDAY,
+    d_blockmean = restr_params_central$D_BLOCKMEAN,
+    pricepcr = restr_params_central$PRICEPCR
+  )
+  knitr::kable(
+    tbl_restr_sa,
+    digits = 2,
+    caption = "Sensibilité déterministe one-way (mêmes tirages MC, B = 2000, seed = 42). Moyennes €/vache-année. loss_EHD = −mean(ΔMB)."
+  )
+}
+```
+
+### definition of ehd_only_cost_steps
+
+```{r}
+library(dplyr)
+library(tidyr)
+library(ggplot2)
+library(scales)
+
+ehd_only_cost_steps <- c("COST_VET_D", "COST_RESTR")
+
+prep_mc_long_stoch <- function(dat, restr) {
+  decomp_cols <- if (isTRUE(restr)) {
+    c("REV_COW", "REV_WEAN", "COST_VET_D", "COST_RESTR", "MB_op")
+  } else {
+    c("REV_COW", "REV_WEAN", "MB_op")
+  }
+  step_levels <- decomp_cols
+  step_labels <- c(
+    REV_COW     = "Culled cows",
+    REV_WEAN    = "Weanlings",
+    COST_VET_D  = "Treatments",
+    COST_RESTR  = "Restrictions",
+    MB_op       = ""
+  )[step_levels]
+  mc_long <- dat %>%
+    mutate(scenario = recode(scen, "REF" = "EHD-free", "MHE" = "EHD")) %>%
+    pivot_longer(
+      cols = all_of(decomp_cols),
+      names_to = "step",
+      values_to = "value"
+    ) %>%
+    filter(!(step %in% ehd_only_cost_steps & scenario == "EHD-free")) %>%
+    mutate(
+      type = case_when(
+        step %in% c("REV_COW", "REV_WEAN") ~ "PRODUCTS (sales)",
+        step %in% ehd_only_cost_steps      ~ "COSTS",
+        TRUE                               ~ "GROSS MARGIN"
+      ),
+      type = factor(
+        type,
+        levels = if (isTRUE(restr)) {
+          c("PRODUCTS (sales)", "COSTS", "GROSS MARGIN")
+        } else {
+          c("PRODUCTS (sales)", "GROSS MARGIN")
+        }
+      ),
+      scenario = factor(scenario, levels = c("EHD-free", "EHD")),
+      step = factor(step, levels = step_levels, labels = step_labels)
+    )
+  list(mc_long = mc_long, step_levels = step_levels, step_labels = step_labels)
+}
+```
+
+## 5. Costs, revenues and annual gross margin per cow in the EHD scenario compared with the EHD-free scenario.
+
+Costs include veterinary treatments and sanitary and commercial restrictions (PCR testing, additional animal retention and reduced sale prices).
+
+```{r}
+#| label: graph_stoch_en_bl2
+#| echo: false
+#| message: false
+#| warning: false
+#| cache: false
+
+library(dplyr)
+library(tidyr)
+library(ggplot2)
+library(scales)
+
+# --- 1) Long format (même règle que graph_stoch_en_bl) ---
+stoch_vis <- prep_mc_long_stoch(mc_decomp, restr_on)
+mc_long <- stoch_vis$mc_long
+
+# --- 3) Pré-calcul des stats (moyenne + "IC ~ 95%" = mean ± 1.96*sd) ---
+sum_df <- mc_long %>%
+  group_by(type, step, scenario) %>%
+  summarise(
+    mean = mean(value, na.rm = TRUE),
+    sd   = sd(value, na.rm = TRUE),
+    .groups = "drop"
+  ) %>%
+  mutate(
+    ymin  = mean - 1.96 * sd,
+    ymax  = mean + 1.96 * sd,
+    label_y = mean + 135 + ifelse(scenario == "EHD-free", 55, 0),
+    label = paste0("€", format(round(mean, 0), big.mark = ",", decimal.mark = "."))
+  )
+
+# Largeur de barre fixe (unités x). Les groupes à 1 barre (EHD-only) sont
+# collés avec le même écart que EHD-free / EHD, sans réserver un second slot.
+bar_w     <- 0.72
+pair_gap  <- 0.12
+group_gap <- 0.50
+type_origin <- c(
+  "PRODUCTS (sales)" = 0,
+  "COSTS"            = 100,
+  "GROSS MARGIN"     = 200
+)
+
+place_bars <- function(df) {
+  steps <- if (is.factor(df$step)) {
+    intersect(levels(droplevels(df$step)), as.character(df$step))
+  } else {
+    unique(as.character(df$step))
+  }
+  origin <- unname(type_origin[as.character(df$type[1])])
+  cursor <- origin
+  rows <- list()
+  for (st in steps) {
+    sl <- df[df$step == st, , drop = FALSE]
+    sl <- sl[order(sl$scenario), , drop = FALSE]
+    n <- nrow(sl)
+    if (n == 2) {
+      sl$x <- c(cursor + bar_w / 2, cursor + bar_w + pair_gap + bar_w / 2)
+      width_this <- 2 * bar_w + pair_gap
+      next_gap <- group_gap
+    } else {
+      sl$x <- cursor + bar_w / 2
+      width_this <- bar_w
+      next_gap <- pair_gap
+    }
+    rows[[length(rows) + 1]] <- sl
+    cursor <- cursor + width_this + next_gap
+  }
+  bind_rows(rows)
+}
+
+sum_df <- bind_rows(lapply(split(sum_df, sum_df$type, drop = TRUE), place_bars))
+axis_df <- bind_rows(lapply(split(sum_df, sum_df$type, drop = TRUE), function(d) {
+  steps <- if (is.factor(d$step)) {
+    intersect(levels(droplevels(d$step)), as.character(d$step))
+  } else {
+    unique(as.character(d$step))
+  }
+  data.frame(
+    x = unname(vapply(steps, function(st) mean(d$x[as.character(d$step) == st]), numeric(1))),
+    lab = steps,
+    stringsAsFactors = FALSE
+  )
+}))
+axis_df <- axis_df[nzchar(axis_df$lab), , drop = FALSE]
+
+# --- 4) Graphique : space=free_x proportionnel à l'emprise réelle des barres ---
+ggplot(sum_df, aes(x = x, y = mean, fill = scenario)) +
+  geom_col(width = bar_w) +
+  geom_errorbar(aes(ymin = ymin, ymax = ymax), width = 0.12) +
+  geom_label(
+    aes(y = label_y, label = label),
+    size = 3.2,
+    color = "black",
+    fill  = "white",
+    label.size = 0,
+    label.padding = unit(0.12, "lines")
+  ) +
+  facet_grid(. ~ type, scales = "free_x", space = "free_x", switch = "x") +
+  geom_hline(yintercept = 0, linewidth = 0.4, color = "grey30") +
+  scale_x_continuous(
+    breaks = axis_df$x,
+    labels = axis_df$lab,
+    expand = expansion(add = 0.15)
+  ) +
+  scale_y_continuous(
+    labels = label_number(
+      accuracy = 1,
+      big.mark = ",",
+      decimal.mark = ".",
+      prefix = "€"
+    ),
+    expand = expansion(mult = c(0.1, 0.15))
+  ) +
+  labs(x = NULL, y = "€/cow/year", fill = NULL) +
+  scale_fill_manual(
+    values = c("EHD-free" = "grey20", "EHD" = "grey70"),
+    drop = FALSE
+  ) +
+  theme_minimal(base_size = 12) +
+  theme(
+    panel.grid.major.x = element_blank(),
+    panel.grid.minor   = element_blank(),
+    legend.position    = "bottom",
+    strip.placement    = "outside",
+    axis.text.x        = element_text(size = 10)
+  )
+
+```
+
+## 6.Decomposition of EHD-associated economic losses
+
+Points represent mean losses for each component and the total gross margin loss. Horizontal error bars indicate the central 95% simulation intervals (2.5th–97.5th percentiles) from 2,000 Monte Carlo iterations. Treatment and restriction-related costs are shown without intervals; uncertainty in restriction-related costs was explored separately through deterministic sensitivity analyses.
+
+```{r}
+
+#| label: graph_stoch_delta
+#| echo: false
+#| message: false
+#| warning: false
+#| cache: false
+
+library(dplyr)
+library(tidyr)
+library(ggplot2)
+library(scales)
+
+# --- 1. Apparier les scénarios par itération ---
+
+# IMPORTANT : suppose que REF et MHE ont le même ordre
+# de tirage. Si un identifiant d'itération existe,
+# l'utiliser à la place de row_number().
+
+mc_paired <- mc_decomp %>%
+  group_by(scen) %>%
+  mutate(iter = row_number()) %>%
+  ungroup()
+
+stopifnot(
+  sum(mc_paired$scen == "REF") ==
+    sum(mc_paired$scen == "MHE")
+)
+
+mc_wide <- mc_paired %>%
+  select(iter, scen, REV_COW, REV_WEAN,
+         COST_VET_D, COST_RESTR, MB_op) %>%
+  pivot_wider(
+    id_cols = iter,
+    names_from = scen,
+    values_from = c(REV_COW, REV_WEAN,
+                    COST_VET_D, COST_RESTR, MB_op)
+  )
+
+# --- 2. Calcul des pertes par itération ---
+
+mc_losses <- mc_wide %>%
+  transmute(
+    iter,
+    `Culled cows` = REV_COW_REF - REV_COW_MHE,
+    `Weanlings` = REV_WEAN_REF - REV_WEAN_MHE,
+    `Treatments` = COST_VET_D_MHE,
+    `Restrictions` = if (isTRUE(restr_on)) {
+      COST_RESTR_MHE
+    } else {
+      0
+    },
+    `Total gross margin loss` = MB_op_REF - MB_op_MHE
+  ) %>%
+  pivot_longer(
+    cols = -iter,
+    names_to = "component",
+    values_to = "loss"
+  )
+
+# --- 3. Moyennes et intervalles de simulation ---
+
+summary_losses <- mc_losses %>%
+  group_by(component) %>%
+  summarise(
+    mean = mean(loss, na.rm = TRUE),
+    lower = quantile(loss, 0.025, na.rm = TRUE),
+    upper = quantile(loss, 0.975, na.rm = TRUE),
+    .groups = "drop"
+  ) %>%
+  mutate(
+    # Pas d'intervalle affiché pour ces deux postes
+    show_interval = !component %in%
+      c("Treatments", "Restrictions"),
+
+    # Ordre d'affichage, du haut vers le bas
+    component = factor(
+      component,
+      levels = rev(c(
+        "Weanlings",
+        "Culled cows",
+        "Treatments",
+        "Restrictions",
+        "Total gross margin loss"
+      ))
+    ),
+
+    # Affichage des valeurs moyennes
+    label = paste0("€", round(mean, 0))
+  )
+
+if (!isTRUE(restr_on)) {
+  summary_losses <- summary_losses %>%
+    filter(component != "Restrictions")
+}
+
+# --- 4. Graphique ---
+
+# Espace à droite des intervalles pour les étiquettes
+x_max <- max(
+  summary_losses$upper[summary_losses$show_interval],
+  na.rm = TRUE
+)
+
+offset <- x_max * 0.035
+
+ggplot(summary_losses, aes(y = component, x = mean)) +
+
+  # Intervalles centraux à 95 %
+  geom_segment(
+    data = filter(summary_losses, show_interval),
+    aes(x = lower, xend = upper,
+        y = component, yend = component),
+    linewidth = 0.65,
+    color = "grey30"
+  ) +
+
+  # Extrémités des intervalles
+  geom_errorbar(
+    data = filter(summary_losses, show_interval),
+    aes(xmin = lower, xmax = upper),
+    width = 0.15,
+    linewidth = 0.65,
+    color = "grey30",
+    orientation = "y"
+  ) +
+
+  # Estimations moyennes
+  geom_point(
+    aes(shape = show_interval),
+    size = 3,
+    color = "grey20"
+  ) +
+
+  scale_shape_manual(
+    values = c("TRUE" = 16, "FALSE" = 15),
+    guide = "none"
+  ) +
+
+  # Valeurs moyennes inscrites à côté des points
+  geom_text(
+    aes(
+      x = ifelse(show_interval, upper, mean) + offset,
+      label = label
+    ),
+    hjust = 0,
+    size = 3.5,
+    color = "grey20"
+  ) +
+
+  geom_vline(
+    xintercept = 0,
+    linewidth = 0.4,
+    color = "grey30"
+  ) +
+
+  scale_x_continuous(
+    labels = label_number(
+      accuracy = 1,
+      big.mark = ",",
+      prefix = "€"
+    ),
+    expand = expansion(mult = c(0.02, 0.20))
+  ) +
+
+  coord_cartesian(
+    xlim = c(0, x_max + 4 * offset),
+    clip = "off"
+  ) +
+
+  labs(
+    x = "EHD-associated loss (€/cow/year)",
+    y = NULL
+  ) +
+
+  theme_minimal(base_size = 12) +
+
+  theme(
+    panel.grid.major.y = element_blank(),
+    panel.grid.minor = element_blank(),
+    panel.grid.major.x = element_line(
+      color = "grey90",
+      linewidth = 0.4
+    ),
+    axis.text.y = element_text(
+      color = "grey30",
+      size = 11
+    ),
+    axis.text.x = element_text(color = "grey40"),
+    axis.title.x = element_text(
+      color = "black",
+      margin = margin(t = 12)
+    ),
+    legend.position = "none",
+    plot.margin = margin(10, 35, 10, 10)
+  )
+
+# Contrôle des valeurs
+print(summary_losses)
+
+```
+
+## 7. Distribution of annual gross margin per cow in the EHD-free scenario
+
+The median is shown in red and the interquartile range in grey. dissymetrie, median+IQ
+
+```{r}
+#| label: fig-mb-ref-density
+#| fig-width: 8
+#| fig-height: 5
+library(ggplot2)
+library(patchwork)
+
+MB_REF_DET <- 552
+q_ref <- quantile(mc_res$MB_ref, c(.25, .5, .75), na.rm = TRUE)
+q1r <- q_ref[1]; q2r <- q_ref[2]; q3r <- q_ref[3]
+
+p_ref <- ggplot(mc_res, aes(x = MB_ref)) +
+  # bande IQR (Q1-Q3)
+  annotate("rect", xmin = q1r, xmax = q3r, ymin = -Inf, ymax = Inf,
+           alpha = 0.10, fill = "grey50") +
+#  geom_histogram(bins = 40, alpha = 0.7) +
+  geom_density(linewidth = 1) +
+  # lignes verticales
+  geom_vline(xintercept = q2r,        colour = "#d95f02", linetype = 1) +
+  geom_vline(xintercept = q1r,        colour = "#7570b3", linetype = 2) +
+  geom_vline(xintercept = q3r,        colour = "#7570b3", linetype = 2) +
+  labs(
+    title = "Distribution of gross margin – stochastic model",
+    subtitle = sprintf("Median: %.0f  |  IQR: [%.0f – %.0f]",
+                       q2r, q1r, q3r),
+    x = "Gross margin of the EHD-free scenario (€/cow/year)", y = "Probability density"
+  ) +
+  theme_minimal()
+
+p_ref
+
+
+```
+
+## 8. 4 Scenarii simulation
+
+### a. Scenarii definition
+
+```{r}
+#| warning: false
+
+## --- Impacts MHE : low vs high ---------------------------------
+
+# Impacts additifs (excess) appliqués au scénario EHD :
+# - adult female mortality: +1 pp
+# - calf mortality: +2 pp
+# - calving interval: +10 days
+
+impacts_none <- NULL  # pour le scénario EHD-free
+
+impacts_init <- list(
+  dMO_COW = 0.01,  # +1 pp
+  dMO_WEAN  = 0.02,  # +2 pp
+  dIVV      = 10     # +10 days
+)
+
+# Low severity: impacts /2 (tous les paramètres d'impact à la fois)
+impacts_low <- list(
+  dMO_COW = impacts_init$dMO_COW / 2,  # 0.005
+  dMO_WEAN  = impacts_init$dMO_WEAN  / 2,  # 0.01
+  dIVV      = impacts_init$dIVV      / 2   # 5
+)
+
+# High severity: impacts ×2 (tous les paramètres d'impact à la fois)
+impacts_high <- list(
+  dMO_COW = impacts_init$dMO_COW * 2,  # 0.02
+  dMO_WEAN  = impacts_init$dMO_WEAN  * 2,  # 0.04
+  dIVV      = impacts_init$dIVV      * 2   # 20
+)
+
+# définition 5 scénarios (EHD-free + 4 configurations)
+library(tibble)
+
+scenarios <- tribble(
+  ~scenario,                 ~impact_level, ~weanling_price,
+  "EHD_free",                "none",        1400,
+  "Low_EHD_low_price",       "low",         1100,
+  "Low_EHD_high_price",      "low",         1700,
+  "High_EHD_low_price",      "high",        1100,
+  "High_EHD_high_price",     "high",        1700
+)
+
+
+
+#utilitaires :
+# Appliquer un prix de broutard à JM et JF
+apply_weanling_price <- function(p, price) {
+  p$PRICE_WEANM <- price
+  p$PRICE_WEANF <- price
+  p
+}
+
+# Récupérer l'objet d'impacts en fonction du niveau
+get_impacts_obj <- function(level) {
+  switch(level,
+    "none" = impacts_none,
+    "low"  = impacts_low,
+    "high" = impacts_high,
+    stop("Niveau d'impact inconnu : ", level)
+  )
+}
+
+
+#MC par scenario
+
+run_mc_one_scenario <- function(scen_row, B = 2000, seed = 42) {
+  set.seed(seed)
+  out <- vector("list", B)
+
+  impacts_obj <- get_impacts_obj(scen_row$impact_level)
+  is_ehd_free <- identical(scen_row$impact_level, "none")
+
+  for (b in seq_len(B)) {
+
+    p_ref <- draw_params_once(params_eco, dist_tbl)
+
+    p_ref <- apply_weanling_price(p_ref, scen_row$weanling_price)
+
+    TR_eff_ref_row <- p_ref$CULL + p_ref$MO_COW
+
+    res_ref <- run_scenario(p_ref, TR_eff_ref_row, mhe = FALSE)
+
+    if (is_ehd_free) {
+      res_mhe_MB <- res_ref$MB_op
+    } else {
+      p_mhe <- apply_impacts(p_ref, impacts_obj)
+      p_mhe$COST_VET_D <- 15
+      p_mhe <- apply_mhe_restr(p_mhe, restr = restr_on)
+      res_mhe <- run_scenario(p_mhe, TR_eff_ref_row, mhe = TRUE)
+      res_mhe_MB <- res_mhe$MB_op
+    }
+
+    out[[b]] <- data.frame(
+      draw   = b,
+      MB_ref = res_ref$MB_op,
+      MB_mhe = res_mhe_MB,
+      dMB    = res_mhe_MB - res_ref$MB_op
+    )
+  }
+
+  mc_tmp <- do.call(rbind, out)
+
+  data.frame(
+    scenario    = scen_row$scenario,
+    mean_MB_ref = mean(mc_tmp$MB_ref),
+    sd_MB_ref   = sd(mc_tmp$MB_ref),
+    mean_MB_mhe = mean(mc_tmp$MB_mhe),
+    sd_MB_mhe   = sd(mc_tmp$MB_mhe),
+    mean_dMB    = mean(mc_tmp$dMB),
+    sd_dMB      = sd(mc_tmp$dMB),
+    q05_dMB     = quantile(mc_tmp$dMB, 0.05),
+    q50_dMB     = quantile(mc_tmp$dMB, 0.50),
+    q95_dMB     = quantile(mc_tmp$dMB, 0.95),
+    p_dMB_neg   = mean(mc_tmp$dMB < 0)
+  )
+}
+
+
+library(dplyr)
+library(knitr)
+
+res_scenarios <- scenarios %>%
+  group_split(scenario) %>%
+  lapply(\(df) run_mc_one_scenario(df[1, ], B = 2000, seed = 42)) %>%
+  bind_rows()
+
+
+
+
+```
+
+### b. Scenarii graph
+
+```{r}
+#| label: fig-bubbles-4cas
+#| fig-width: 8
+#| fig-height: 6
+library(dplyr)
+library(ggplot2)
+library(shadowtext)
+
+# 1) dMB moyenne du scénario de référence (comparaison initiale)
+ref_dMB <- summ$mean_dMB   # ≈ -88.10564
+
+# 2) Bubbles pour les 4 scénarios "prix × impact" (on enlève EHD_free)
+df_bubbles_core <- res_scenarios %>%
+  filter(scenario != "EHD_free") %>%
+  select(scenario, mean_dMB) %>%
+  mutate(
+    # Position en X : impact EHD
+    MHE_impact = case_when(
+      scenario == "Low_EHD_low_price"   ~ -1,
+      scenario == "Low_EHD_high_price"  ~ -1,
+      scenario == "High_EHD_low_price"  ~  1,
+      scenario == "High_EHD_high_price" ~  1,
+      TRUE ~ NA_real_
+    ),
+    # Position en Y : niveau de prix du broutard
+    price_diff = case_when(
+      scenario %in% c("Low_EHD_low_price", "High_EHD_low_price")   ~ -200,
+      scenario %in% c("Low_EHD_high_price", "High_EHD_high_price") ~  400,
+      TRUE ~ NA_real_
+    ),
+    dMB      = mean_dMB,
+    size_var = abs(dMB),
+    label    = round(dMB)
+  ) %>%
+  filter(!is.na(MHE_impact), !is.na(price_diff))
+
+# 3) Ajouter le point central "Ref" (impact moyen global)
+ref_row <- tibble(
+  scenario   = "Ref",
+  mean_dMB   = ref_dMB,
+  MHE_impact = 0,
+  price_diff = 0,
+  dMB        = ref_dMB,
+  size_var   = abs(ref_dMB),
+  label      = round(ref_dMB)
+)
+
+# 4) Fusionner les 4 scénarios + le point Ref
+df_bubbles <- bind_rows(df_bubbles_core, ref_row)
+
+# 5) Graphique
+
+library(shadowtext)
+
+geom_shadowtext(
+  aes(label = label),
+  color = "white",
+  bg.color = "black",
+  bg.r = 0.15,
+  size = 3.8,
+  fontface = "bold"
+)
+
+
+
+
+ggplot(df_bubbles, aes(x = MHE_impact, y = price_diff, size = size_var)) +
+
+  # lignes de référence (une seule fois, en arrière-plan)
+  geom_hline(yintercept = 0, linewidth = 1.2, color = "black") +
+  geom_vline(xintercept = 0, linewidth = 1.2, color = "black") +
+
+  # bulles
+  geom_point(shape = 21, color = "black", fill = "#7F7F7F", alpha = 0.8) +
+
+  # étiquettes au-dessus (shadowtext conseillé)
+  shadowtext::geom_shadowtext(
+    aes(label = label),
+    color = "black",
+    bg.color = "white",
+    bg.r = 0.15,
+    size = 3.8,
+    fontface = "bold",
+    vjust = 0.4
+  ) +
+
+  scale_size_area(max_size = 33) +
+  scale_x_continuous(
+    breaks = c(-1, 0, 1),
+    labels = c("EHD_low", "ref", "EHD_high"),
+    limits = c(-1.2, 1.2)
+  ) +
+  scale_y_continuous(
+    breaks = c(-200, 0, 400),
+    labels = c("€1100", "ref", "€1700"),
+    limits = c(-300, 520)
+  ) +
+  labs(
+    title   = "",
+    caption = "Bubble area proportional to gross margin loss (€/cow/year)",
+    x       = "EHD impact",
+    y       = "Calf price (€)"
+  ) +
+  theme_classic(base_size = 12) +
+  theme(
+    panel.grid      = element_blank(),
+    legend.position = "none",
+    axis.title      = element_text(size = 12, face = "bold"),
+    axis.text       = element_text(size = 11)
+  )
+
+```
+
+## 9. One-way sensitivity tornado diagram for gross-margin loss
+
+Bars show the change in gross-margin loss obtained by setting each EHD-impact parameter to its lower and upper bound. The vertical dashed line represents the mean loss from the reference comparison. All parameters decrease gross margin (negative effect).
+
+Parameter bounds used in the analysis were: excess adult female mortality 0–3 pp; excess calf mortality 0–6 pp; and increase in calving interval 0–30 days.
+
+```{r}
+#| label: fig-tornado
+#| warning: false
+#| fig-width: 8
+#| fig-height: 4.5
+## Scénario d'impact MHE "initial"
+impacts_init <- list(
+  dMO_COW = 0.01,
+  dMO_WEAN  = 0.02,
+  dIVV      = 10
+)
+
+## Plages low/high : low = 0 (pas d'impact), high = 2×impact initial
+range_impacts <- list(
+  dMO_COW = c(low = 0, high = 3 * impacts_init$dMO_COW),
+  dMO_WEAN  = c(low = 0, high = 3 * impacts_init$dMO_WEAN),
+  dIVV      = c(low = 0, high = 3 * impacts_init$dIVV)
+)
+
+## Scénarios "un paramètre à la fois" + scénario initial
+impact_scenarios <- list(
+  "init"     = impacts_init,
+
+  "AF_low"   = list(
+    dMO_COW = range_impacts$dMO_COW[["low"]],
+    dMO_WEAN  = impacts_init$dMO_WEAN,
+    dIVV      = impacts_init$dIVV
+  ),
+  "AF_high"  = list(
+    dMO_COW = range_impacts$dMO_COW[["high"]],
+    dMO_WEAN  = impacts_init$dMO_WEAN,
+    dIVV      = impacts_init$dIVV
+  ),
+
+  "Y_low"    = list(
+    dMO_COW = impacts_init$dMO_COW,
+    dMO_WEAN  = range_impacts$dMO_WEAN[["low"]],
+    dIVV      = impacts_init$dIVV
+  ),
+  "Y_high"   = list(
+    dMO_COW = impacts_init$dMO_COW,
+    dMO_WEAN  = range_impacts$dMO_WEAN[["high"]],
+    dIVV      = impacts_init$dIVV
+  ),
+
+  "IVV_low"  = list(
+    dMO_COW = impacts_init$dMO_COW,
+    dMO_WEAN  = impacts_init$dMO_WEAN,
+    dIVV      = range_impacts$dIVV[["low"]]
+  ),
+  "IVV_high" = list(
+    dMO_COW = impacts_init$dMO_COW,
+    dMO_WEAN  = impacts_init$dMO_WEAN,
+    dIVV      = range_impacts$dIVV[["high"]]
+  )
+)
+
+
+run_mc_for_impacts <- function(impacts_obj, label = "scenario", B = 2000, seed = 42) {
+  set.seed(seed)
+  out <- vector("list", B)
+
+  for (b in seq_len(B)) {
+    # 1) Tirage des paramètres de base (sans MHE)
+    p_ref <- draw_params_once(params_eco, dist_tbl)
+
+    # 2) Calcul de l'efficacité de reproduction de référence
+    TR_eff_ref_row <- p_ref$CULL + p_ref$MO_COW
+
+    # 3) Scénario de référence sans MHE
+    res_ref <- run_scenario(p_ref, TR_eff_ref_row, mhe = FALSE)
+
+    # 4) Scénario avec MHE (impacts_obj = dMO_COW, dMO_WEAN, dIVV)
+    p_mhe <- apply_impacts(p_ref, impacts_obj)
+    p_mhe$COST_VET_D <- 15
+    p_mhe <- apply_mhe_restr(p_mhe, restr = restr_on)
+
+    res_mhe <- run_scenario(p_mhe, TR_eff_ref_row, mhe = TRUE)
+
+    out[[b]] <- data.frame(
+      draw   = b,
+      MB_ref = res_ref$MB_op,
+      MB_mhe = res_mhe$MB_op,
+      dMB    = res_mhe$MB_op - res_ref$MB_op
+    )
+  }
+
+  mc_tmp <- do.call(rbind, out)
+
+  data.frame(
+    impact_scenario = label,
+    mean_MB_ref = mean(mc_tmp$MB_ref),
+    sd_MB_ref   = sd(mc_tmp$MB_ref),
+    mean_MB_mhe = mean(mc_tmp$MB_mhe),
+    sd_MB_mhe   = sd(mc_tmp$MB_mhe),
+    mean_dMB    = mean(mc_tmp$dMB),
+    sd_dMB      = sd(mc_tmp$dMB),
+    q05_dMB     = quantile(mc_tmp$dMB, 0.05),
+    q50_dMB     = quantile(mc_tmp$dMB, 0.50),
+    q95_dMB     = quantile(mc_tmp$dMB, 0.95),
+    p_dMB_neg   = mean(mc_tmp$dMB < 0)
+  )
+}
+
+
+library(dplyr)
+library(knitr)
+
+res_impacts <- lapply(names(impact_scenarios), function(nm) {
+  run_mc_for_impacts(
+    impacts_obj = impact_scenarios[[nm]],
+    label       = nm,
+    B           = 2000,
+    seed        = 42
+  )
+}) %>%
+  bind_rows()
+
+kable(res_impacts, digits = 2)
+
+
+#===========================TORNADO========================================
+
+library(dplyr)
+library(ggplot2)
+
+# --- 1) baseline : scénario "init" ---------------------------------
+base_dMB <- res_impacts %>%
+  filter(impact_scenario == "init") %>%
+  pull(mean_dMB)
+
+# --- 2) Correspondance paramètre <-> scénarios low/high -----------
+sens_structure <- tibble::tibble(
+  impact     = c("dMO_COW", "dMO_WEAN", "dIVV"),
+  scen_low   = c("AF_low",    "Y_low",    "IVV_low"),
+  scen_high  = c("AF_high",   "Y_high",   "IVV_high")
+)
+
+# --- 3) torn : Récupérer les dMB low / high pour chaque paramètre --------
+torn_df <- sens_structure %>%
+  left_join(
+    res_impacts %>% select(impact_scenario, mean_dMB),
+    by = c("scen_low" = "impact_scenario")
+  ) %>%
+  rename(dMB_low = mean_dMB) %>%
+  left_join(
+    res_impacts %>% select(impact_scenario, mean_dMB),
+    by = c("scen_high" = "impact_scenario")
+  ) %>%
+  rename(dMB_high = mean_dMB) %>%
+  mutate(
+    min_val = pmin(dMB_low, dMB_high),
+    max_val = pmax(dMB_low, dMB_high),
+    from    = min_val,
+    to      = max_val
+  )
+
+
+# --- 4) Dictionnaire d'étiquettes lisibles ------------------------
+labels_map <- c(
+  dMO_COW = "Cow mortality rate",
+  dMO_WEAN  = "Calf mortality rate",
+  dIVV      = "Calving interval"
+)
+
+torn_df$impact_label <- labels_map[torn_df$impact]
+
+# Option : trier par importance de l'amplitude (comme ton code)
+torn_df <- torn_df %>%
+  arrange(desc(abs(to - from)))
+
+# --- 5) Graphique tornado -----------------------------------------
+ggplot(torn_df,
+       aes(y = reorder(impact_label, abs(to - from)))) +
+  # barre principale (du min au max, en valeur de perte brute)
+  geom_segment(aes(x = from, xend = to, yend = impact_label),
+               linewidth = 6, lineend = "round") +
+  geom_vline(xintercept = round(base_dMB, 0), linetype = 2) +
+  labs(
+    title    = "Sensitivity of gross margin loss to EHD impacts",
+    subtitle = paste0("One-way sensitivity (dashed line = mean loss = ",
+                      round(base_dMB, 0), " €/cow/year)"),
+    x        = "Gross margin loss (€/cow/year)",   # 👈 ici
+    y        = NULL
+  ) +
+  theme_minimal(base_size = 12) +
+  theme(
+    panel.grid.major.y = element_blank(),
+    panel.grid.minor   = element_blank(),
+    axis.title.x       = element_text(size = 11, face = "bold"),
+    axis.text.y        = element_text(size = 11),
+    plot.title         = element_text(size = 14, face = "bold")
+  )
+
+
+```

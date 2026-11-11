@@ -1,0 +1,9 @@
+param,dist,mean,sd,min,max
+CULL,normal,0.20,0.05,0.02,0.5
+MO_COW,normal,0.02,0.02,0,0.25
+IVV,normal,385,50,300,500
+MO_WEAN,normal,0.096,0.016,0,0.5
+PRICE_CULL,normal,1885,500,1000,3500
+PRICE_WEANM,normal,1400,300,800,2200
+PRICE_WEANF,normal,1200,300,700,2000
+

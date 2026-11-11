@@ -1,0 +1,8 @@
+---
+# Central COST_RESTR values (EHD only). Not sampled in Monte Carlo.
+# Main PRICEREDUCTION = 60 (period-average market effect, not the ~200 peak).
+PRICEREDUCTION: 60
+COSTDAY: 1
+D_BLOCKMEAN: 5.4
+PRICEPCR: 15
+PROPPCR: 0.71
