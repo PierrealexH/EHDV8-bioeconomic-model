@@ -57,3 +57,12 @@ The model can be executed using the supplied configuration files without access 
 ## Scope
 
 The model estimates disease-associated farm-level economic losses over a one-year horizon. It does not include public-sector costs, compensation payments or economic losses incurred by non-infected farms.
+
+
+## Citation
+
+If you use this model in your research, please cite the archived software version:
+
+Heckly, P.-A. (2026). *EHDV-8 bioeconomic model for French beef cow–calf farms* (Version 1.0.0) [Computer software]. Zenodo. https://doi.org/10.5281/zenodo.24144287
+
+The DOI identifies the exact version of the model used in the analysis. The repository also provides a `CITATION.cff` file containing machine-readable citation metadata.
